@@ -1,0 +1,99 @@
+apiVersion: kubeflow.org/v2alpha1
+kind: ClusterTrainingRuntime
+metadata:
+  name: torch-tune-llama-3.2-1b
+  labels:
+    training.kubeflow.org/phase: post-training
+    training.kubeflow.org/device: GPU-Tesla-V100-16GB
+spec:
+  mlPolicy:
+    numNodes: 1
+    torch:
+      numProcPerNode: auto
+  template:
+    spec:
+      startupPolicy:
+        startupPolicyOrder: InOrder
+      replicatedJobs:
+        - name: initializer
+          template:
+            spec:
+              template:
+                spec:
+                  initContainers:
+                    - name: dataset-initializer
+                      image: docker.io/andreyvelichkevich/dataset-initializer-v2
+                      env:
+                        - name: STORAGE_URI
+                          value: hf://tatsu-lab/alpaca
+                        - name: ACCESS_TOKEN
+                          value: <HF_TOKEN>
+                      volumeMounts:
+                        - mountPath: /workspace/dataset
+                          name: storage-initializer
+                    - name: model-initializer
+                      image: docker.io/andreyvelichkevich/model-initializer-v2
+                      env:
+                        - name: STORAGE_URI
+                          value: hf://meta-llama/Llama-3.2-1B-Instruct
+                        - name: ACCESS_TOKEN
+                          value: <HF_TOKEN>
+                      volumeMounts:
+                        - mountPath: /workspace/model
+                          name: storage-initializer
+                  containers:
+                    - name: busybox
+                      image: docker.io/busybox:stable-glibc
+                  volumes:
+                    - name: storage-initializer
+                      persistentVolumeClaim:
+                        claimName: storage-initializer
+        - name: trainer-node
+          template:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: trainer
+                      image: docker.io/andreyvelichkevich/llama-trainer
+                      command:
+                        - torchrun
+                        - /workspace/src/llama_recipes/finetuning.py
+                      args:
+                        - "--enable_fsdp"
+                        - "--use_peft"
+                        - "--peft_method"
+                        - "lora"
+                        - "--use_fp16"
+                        - "True"
+                        - --fsdp_config.use_fp16
+                        - "True"
+                        - "--low_cpu_fsdp"
+                        - "True"
+                        - --fsdp_config.fsdp_cpu_offload
+                        - "True"
+                        - --batch_size_training
+                        - "1"
+                        - --num_epochs
+                        - "1"
+                        - --output_dir
+                        - /workspace/output/
+                      env:
+                        - name: HF_TOKEN
+                          value: <HF_TOKEN>
+                        - name: TOKENIZERS_PARALLELISM
+                          value: "false"
+                        - name: BUCKET_NAME
+                          value: <BUCKET_NAME>
+                      resources:
+                        limits:
+                          nvidia.com/gpu: 4
+                      volumeMounts:
+                        - mountPath: /workspace/dataset
+                          name: storage-initializer
+                        - mountPath: /workspace/model
+                          name: storage-initializer
+                  volumes:
+                    - name: storage-initializer
+                      persistentVolumeClaim:
+                        claimName: storage-initializer
